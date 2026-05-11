@@ -1,16 +1,20 @@
 """Feedback & Learning Layer - Experiment logging and model retraining"""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TYPE_CHECKING
 from app.core.logging import logger
+
+if TYPE_CHECKING:
+    from app.layers.prediction_layer import PredictionLayer
 
 
 class FeedbackLearningLayer:
     """Feedback & Learning Layer - Manages experimental feedback and model retraining"""
     
-    def __init__(self):
+    def __init__(self, prediction_layer: "PredictionLayer" = None):
         self.logger = logger
         self.retraining_history = []
+        self.prediction_layer = prediction_layer  # Reference to trainable model
     
     def log_experiment(
         self,
@@ -226,31 +230,41 @@ class FeedbackLearningLayer:
         - Minimum number of new data points (default: 5)
         - Quality gates (filter anomalies unless explicitly verified)
         - Version management and rollback capability
-        - A/B testing for model validation
+        - Calls PredictionLayer.train() to actually retrain the model
         """
         self.logger.info(f"Retraining triggered: {trigger_reason} ({len(new_experiments)} new experiments)")
         
         # Data quality gates
         quality_filtered = []
         for exp in new_experiments:
-            # Only include normal or verified experiments
-            if exp["status"] in ["normal", "verified_outperformer"]:
+            # Only include normal or verified experiments for training
+            if exp.get("status") in ["normal", "verified_outperformer"]:
                 quality_filtered.append(exp)
         
-        if len(quality_filtered) < 5:
-            self.logger.warning(f"Insufficient quality data for retraining: {len(quality_filtered)} < 5")
+        if len(quality_filtered) < 3:
+            self.logger.warning(f"Insufficient quality data for retraining: {len(quality_filtered)} < 3")
             return {
                 "status": "insufficient_data",
-                "message": f"Need at least 5 quality experiments, got {len(quality_filtered)}",
+                "message": f"Need at least 3 quality experiments, got {len(quality_filtered)}",
             }
+        
+        # Actually train the model if available
+        training_report = None
+        if self.prediction_layer:
+            self.logger.info(f"Calling PredictionLayer.train() with {len(quality_filtered)} experiments")
+            training_report = self.prediction_layer.train(quality_filtered)
+            self.logger.info(f"Training report: {training_report}")
+        else:
+            self.logger.warning("PredictionLayer not available — skipping model training")
         
         retraining_job = {
             "job_id": f"retrain_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
-            "version": f"v1.{len(self.retraining_history)+1}",
+            "version": f"v2.{len(self.retraining_history)+1}-trained",
             "trigger_reason": trigger_reason,
             "new_training_samples": len(quality_filtered),
             "filtered_out": len(new_experiments) - len(quality_filtered),
-            "status": "queued",
+            "status": "completed" if training_report and training_report.get("status") == "trained" else "queued",
+            "training_report": training_report,
             "created_at": datetime.utcnow().isoformat(),
         }
         

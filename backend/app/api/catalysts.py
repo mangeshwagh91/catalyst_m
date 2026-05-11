@@ -32,20 +32,39 @@ def retrieve_known_catalysts(
 ):
     """
     Retrieve known catalysts from scientific databases for a target reaction and persist them.
+    
+    Strategy:
+    1. Extracts elements from reactants/products
+    2. Queries Materials Project API for real materials if available
+    3. Falls back to rule-based mock data if API unavailable
+    
+    Returns catalysts with source attribution (Materials Project, mocked, etc.)
     """
     logger.info(f"Retrieving known catalysts for {request.reactants} → {request.products}")
     
     try:
+        # Use knowledge layer to retrieve real or mock catalysts
         retrieved = knowledge_layer.retrieve_catalysts_for_reaction(
             reactants=request.reactants,
             products=request.products,
-            limit=request.limit
+            limit=request.limit,
+            use_real_data=True  # Enable real API queries
         )
+        
+        # Determine source
+        source = "Materials Project" if retrieved and any(cat.get("source") == "Materials Project" for cat in retrieved) else "Mock Data"
         
         saved_catalysts = []
         for cat in retrieved:
-            # Check if already exists for this reaction to avoid duplicates if necessary
-            # For now, we'll create new entries or update
+            # Deduplicate: skip if this catalyst name already exists for this reaction
+            existing = db.query(Catalyst).filter(
+                Catalyst.reaction_id == request.reaction_id,
+                Catalyst.name == cat["name"]
+            ).first()
+            if existing:
+                saved_catalysts.append(existing)
+                continue
+
             db_catalyst = Catalyst(
                 id=str(uuid.uuid4()),
                 reaction_id=request.reaction_id,
@@ -67,6 +86,8 @@ def retrieve_known_catalysts(
         return {
             "reaction_id": request.reaction_id,
             "count": len(saved_catalysts),
+            "source": source,
+            "message": f"Retrieved {len(saved_catalysts)} catalysts from {source}",
             "catalysts": [CatalystResponse.model_validate(c) for c in saved_catalysts],
         }
     except Exception as e:

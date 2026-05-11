@@ -10,11 +10,14 @@ from app.db.database import get_db
 from app.schemas.schemas import ExperimentCreate, ExperimentResponse, DiscrepancyAnalysisSchema
 from app.models.models import Experiment, ModelVersion
 from app.layers.feedback_layer import FeedbackLearningLayer
+from app.layers.prediction_layer import PredictionLayer
 from app.core.logging import logger
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
-feedback_layer = FeedbackLearningLayer()
+# Initialize layers - FeedbackLearningLayer with access to PredictionLayer for training
+prediction_layer = PredictionLayer()
+feedback_layer = FeedbackLearningLayer(prediction_layer=prediction_layer)
 
 
 class LogResultsRequest(BaseModel):
@@ -58,6 +61,9 @@ def log_experimental_results(
         )
         
         # Persist to database
+        # NOTE: feedback_layer returns deviations nested as:
+        #   experiment_data["deviations"]["activity"]["absolute_deviation"]
+        deviations = experiment_data.get("deviations", {})
         db_experiment = Experiment(
             id=str(uuid.uuid4()),
             reaction_id=request.reaction_id,
@@ -68,9 +74,9 @@ def log_experimental_results(
             predicted_activity=request.predicted_properties.get("activity"),
             predicted_selectivity=request.predicted_properties.get("selectivity"),
             predicted_stability=request.predicted_properties.get("stability"),
-            activity_deviation=experiment_data.get("activity_deviation"),
-            selectivity_deviation=experiment_data.get("selectivity_deviation"),
-            stability_deviation=experiment_data.get("stability_deviation"),
+            activity_deviation=deviations.get("activity", {}).get("percent_deviation"),
+            selectivity_deviation=deviations.get("selectivity", {}).get("percent_deviation"),
+            stability_deviation=deviations.get("stability", {}).get("percent_deviation"),
             status=experiment_data.get("status", "normal"),
             hypothesis=experiment_data.get("hypothesis"),
             notes=request.notes,

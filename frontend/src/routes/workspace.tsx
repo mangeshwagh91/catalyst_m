@@ -14,7 +14,8 @@ import {
   retrieveCatalysts, 
   rankCatalysts,
   fetchExperimentSummary,
-  fetchRetrainingHistory
+  fetchRetrainingHistory,
+  triggerRetraining
 } from "../lib/api";
 import {
   ActivitySelectivityScatter,
@@ -212,21 +213,50 @@ function OverviewView({ stats, projects, isLoading }: { stats: any, projects: an
 }
 
 
-function CandidatesView({ candidates, isLoading, error, onRetry }: { candidates: any[], isLoading: boolean, error?: any, onRetry?: () => void }) {
+function CandidatesView({ candidates, catalystSource, catalystCount, isLoading, error, onRetry }: { candidates: any[], catalystSource?: string, catalystCount?: number, isLoading: boolean, error?: any, onRetry?: () => void }) {
   if (error) return <ErrorState error={error} onRetry={onRetry} />;
+
+  const handleExportCSV = () => {
+    if (!candidates.length) return;
+    const headers = ['catalyst_id', 'composition', 'activity', 'selectivity', 'stability', 'combined_score', 'uncertainty', 'source', 'rank'];
+    const rows = candidates.map((c: any) =>
+      headers.map(h => {
+        const v = c[h];
+        return typeof v === 'number' ? v.toFixed(3) : (v ?? '');
+      }).join(',')
+    );
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `catalyst_candidates_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <PageTransition className="p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-4">
         <div>
           <h1 className="text-2xl font-display">Candidate Pool</h1>
-          <p className="text-muted-foreground text-sm mt-1">Explore all generated and retrieved candidates for the current project.</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            {catalystSource && catalystCount ? (
+              <>Retrieved {catalystCount} catalysts from <span className="text-primary font-semibold">{catalystSource}</span></>
+            ) : (
+              <>Explore all generated and retrieved candidates for the current project.</>
+            )}
+          </p>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
           <button className="flex-1 sm:flex-none px-3 py-1.5 border border-border bg-card rounded text-sm flex items-center justify-center gap-2 hover:bg-secondary transition-colors">
             <Search className="h-4 w-4" /> Filter
           </button>
-          <button className="flex-1 sm:flex-none px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm hover:opacity-90 transition-opacity">
+          <button
+            onClick={handleExportCSV}
+            disabled={!candidates.length}
+            className="flex-1 sm:flex-none px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             Export CSV
           </button>
         </div>
@@ -452,7 +482,11 @@ function ExperimentsView({ stats, isLoading }: { stats: any, isLoading: boolean 
   );
 }
 
-function FeedbackLoopView({ history, stats, isLoading }: { history: any[], stats: any, isLoading: boolean }) {
+function FeedbackLoopView({ history, stats, isLoading, onTriggerRetraining, retrainingToast }: {
+  history: any[], stats: any, isLoading: boolean,
+  onTriggerRetraining: () => void,
+  retrainingToast: string | null
+}) {
   if (isLoading) return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       <div className="h-32 w-full bg-secondary/40 rounded animate-pulse" />
@@ -468,6 +502,13 @@ function FeedbackLoopView({ history, stats, isLoading }: { history: any[], stats
         <p className="text-muted-foreground mt-2">Aligning physical experiment outcomes with AI predictions to fine-tune models.</p>
       </div>
 
+      {retrainingToast && (
+        <div className="flex items-center gap-3 bg-primary/10 border border-primary/30 text-primary px-4 py-3 rounded-xl animate-fade-in-up">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span className="text-sm">{retrainingToast}</span>
+        </div>
+      )}
+
       {stats?.experiments_by_status?.anomaly > 0 && (
         <div className="bg-[oklch(0.82_0.15_75)]/5 border border-[oklch(0.82_0.15_75)]/40 p-6 rounded-xl animate-fade-in-up">
           <div className="flex items-center gap-3 mb-4 text-[oklch(0.82_0.15_75)]">
@@ -478,7 +519,10 @@ function FeedbackLoopView({ history, stats, isLoading }: { history: any[], stats
             System detected {stats.experiments_by_status.anomaly} anomaly(s) in recent experiments. 
             Automated retraining is recommended to align model with observed experimental data.
           </p>
-          <button className="bg-[oklch(0.82_0.15_75)] text-white px-4 py-2 rounded font-mono text-xs uppercase flex items-center gap-2 hover:opacity-90 transition-opacity">
+          <button
+            onClick={onTriggerRetraining}
+            className="bg-[oklch(0.82_0.15_75)] text-white px-4 py-2 rounded font-mono text-xs uppercase flex items-center gap-2 hover:opacity-90 transition-opacity"
+          >
             <Zap className="h-4 w-4" /> Initiate Retraining Cycle
           </button>
         </div>
@@ -600,6 +644,7 @@ export function Workspace() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [reactionInput, setReactionInput] = useState("CO2 + 3H2 -> CH3OH + H2O");
   const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
+  const [retrainingToast, setRetrainingToast] = useState<string | null>(null);
   const [chat, setChat] = useState<{ role: "assistant" | "user"; text: string }[]>([
     { role: "assistant", text: "Ready to start discovery cycle. Enter your target reaction to begin." }
   ]);
@@ -623,8 +668,10 @@ export function Workspace() {
     enabled: !!activeReaction,
   });
 
+  // FIX: Use stable primitive (count) in queryKey — avoids infinite re-fetch
+  // caused by new array reference on every render
   const { data: rankingData, isLoading: loadingRanking, error: errorRanking } = useQuery({
-    queryKey: ["ranking", activeReaction?.id, catalystsData?.catalysts],
+    queryKey: ["ranking", activeReaction?.id, catalystsData?.count],
     queryFn: () => rankCatalysts({
       catalysts: catalystsData!.catalysts,
       reaction_conditions: {
@@ -634,7 +681,7 @@ export function Workspace() {
       },
       reaction_id: activeReaction!.id
     }),
-    enabled: !!activeReaction && !!catalystsData?.catalysts,
+    enabled: !!activeReaction && !!catalystsData?.catalysts?.length,
   });
 
   const { data: experimentSummary, isLoading: loadingExperiments } = useQuery({
@@ -673,6 +720,20 @@ export function Workspace() {
         { role: "assistant", text: "New reaction created. Discovery pipeline initiated. Retrieving known catalysts and generating novel variants..." }
       ]);
     },
+  });
+
+  const retrainingMutation = useMutation({
+    mutationFn: () => triggerRetraining([], "manual_trigger"),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["retrainingHistory"] });
+      const version = data?.retraining_job?.version ?? "new";
+      setRetrainingToast(`Retraining job queued successfully — model ${version} scheduled.`);
+      setTimeout(() => setRetrainingToast(null), 6000);
+    },
+    onError: () => {
+      setRetrainingToast("Failed to queue retraining. Check backend connection.");
+      setTimeout(() => setRetrainingToast(null), 5000);
+    }
   });
 
   useEffect(() => {
@@ -979,11 +1040,17 @@ export function Workspace() {
           </div>
         </PageTransition>
       );
-      case "Candidates": return <CandidatesView candidates={rankingData ?? []} isLoading={loadingRanking} error={errorRanking} onRetry={() => queryClient.invalidateQueries({ queryKey: ["ranking"] })} />;
+      case "Candidates": return <CandidatesView candidates={rankingData ?? []} catalystSource={catalystsData?.source} catalystCount={catalystsData?.count} isLoading={loadingRanking} error={errorRanking} onRetry={() => queryClient.invalidateQueries({ queryKey: ["ranking"] })} />;
       case "Predictions": return <PredictionsView rankingData={rankingData ?? []} isLoading={loadingRanking} />;
       case "Visualizations": return <VisualizationsView rankingData={rankingData ?? []} isLoading={loadingRanking} />;
       case "Experiments": return <ExperimentsView stats={experimentSummary} isLoading={loadingExperiments} />;
-      case "Feedback Loop": return <FeedbackLoopView history={retrainingHistory?.history ?? []} stats={experimentSummary} isLoading={loadingHistory} />;
+      case "Feedback Loop": return <FeedbackLoopView
+        history={retrainingHistory?.history ?? []}
+        stats={experimentSummary}
+        isLoading={loadingHistory}
+        onTriggerRetraining={() => retrainingMutation.mutate()}
+        retrainingToast={retrainingToast}
+      />;
       case "Knowledge Base": return <KnowledgeBaseView />;
       case "Protocols": return <ProtocolsView />;
       default: return null;
@@ -1113,8 +1180,8 @@ export function Workspace() {
         </div>
       </section>
 
-      {/* RIGHT AI ASSISTANT - Hidden on mobile/tablet */}
-      <aside className="hidden xl:flex w-80 2xl:w-96 shrink-0 border-l border-border/60 bg-card/40 flex-col">
+      {/* RIGHT AI ASSISTANT */}
+      <aside className="flex w-80 2xl:w-96 shrink-0 border-l border-border/60 bg-card/40 flex-col">
         <div className="px-5 py-4 border-b border-border/60 flex items-center gap-3">
           <div className="relative h-9 w-9 rounded-lg bg-gradient-to-br from-primary to-accent flex items-center justify-center shadow-lg">
             <Bot className="h-5 w-5 text-primary-foreground" />

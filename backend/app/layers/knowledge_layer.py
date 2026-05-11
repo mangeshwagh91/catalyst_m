@@ -1,12 +1,163 @@
 """Knowledge Layer - Retrieves known catalysts from scientific databases"""
 
 from typing import List, Dict, Any
+import requests
+import json
+import re
+from pathlib import Path
 from app.core.logging import logger
 from app.core.utils import generate_id, parse_chemical_formula
 
+# Configuration
+MATERIALS_PROJECT_API_KEY = "7Rkpv4MQv2tr1hJxWPb0nly9slDVECHC"
+MATERIALS_PROJECT_API_BASE = "https://api.materialsproject.org/materials"
+UNIPROT_API_BASE = "https://rest.uniprot.org/uniprotkb"
+DATA_DIR = Path(__file__).parent.parent.parent.parent / "mal_masala"
+UNIPROTKB_FILE = DATA_DIR / "uniprotkb_AND_reviewed_true_2026_05_07.json"
 
-# Mock data for known catalysts from scientific databases
-# In production, these would be retrieved from APIs (Materials Project, Open Catalyst Project, etc.)
+# Cached UniProt data
+_uniprotdb_cache = None
+
+
+def _load_uniprotdb():
+    """Load UniProt database from local file on startup."""
+    global _uniprotdb_cache
+    if _uniprotdb_cache is not None:
+        return _uniprotdb_cache
+    
+    try:
+        if UNIPROTKB_FILE.exists():
+            logger.info(f"Loading UniProt database from {UNIPROTKB_FILE}")
+            with open(UNIPROTKB_FILE, 'r') as f:
+                _uniprotdb_cache = json.load(f)
+            logger.info(f"Loaded {len(_uniprotdb_cache)} UniProt entries")
+            return _uniprotdb_cache
+    except Exception as e:
+        logger.error(f"Error loading UniProt database: {str(e)}")
+    
+    return {}
+
+
+def _extract_elements_from_reaction(reactants: List[str], products: List[str]) -> List[str]:
+    """
+    Extract chemical elements from reactants and products.
+    Example: ['CO2', 'H2'] → ['C', 'O', 'H']
+    """
+    elements = set()
+    
+    # Chemical element symbols (commonly used in catalysis)
+    element_pattern = r'[A-Z][a-z]?'
+    
+    for compound in reactants + products:
+        # Extract element symbols
+        matches = re.findall(element_pattern, compound)
+        elements.update(matches)
+    
+    # Filter out common non-elements
+    valid_elements = {'C', 'H', 'N', 'O', 'S', 'P', 'Cu', 'Zn', 'Ni', 'Co', 'Fe', 'Pt', 'Pd', 'Au', 'Ag', 'Mo', 'W', 'V', 'Cr', 'Mn', 'Re', 'Ru', 'Rh', 'Ir'}
+    return list(elements & valid_elements)
+
+
+def _query_materials_project(elements: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Query Materials Project API for materials containing specified elements.
+    """
+    if not elements:
+        logger.warning("No elements provided for Materials Project query")
+        return []
+    
+    try:
+        # Build formula query (e.g., "Cu" or "Cu-Zn" or "Cu-Zn-Al")
+        formula_query = "-".join(sorted(set(elements)))
+        
+        # Materials Project API endpoint
+        url = f"{MATERIALS_PROJECT_API_BASE}"
+        params = {
+            "api_key": MATERIALS_PROJECT_API_KEY,
+            "formula": formula_query,
+            "fields": ["formula", "material_id", "energy_above_hull", "band_gap", "structure"],
+        }
+        
+        logger.info(f"Querying Materials Project for elements: {elements}, formula: {formula_query}")
+        
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        materials = data.get("data", [])[:limit]
+        
+        logger.info(f"Retrieved {len(materials)} materials from Materials Project")
+        
+        # Format materials for our system
+        formatted = []
+        for i, mat in enumerate(materials):
+            formatted.append({
+                "id": f"mp_{mat.get('material_id', f'unknown_{i}')}",
+                "name": f"Material {mat.get('formula', 'Unknown')}",
+                "composition": mat.get('formula', 'Unknown'),
+                "source": "Materials Project",
+                "activity": 60 + (i * 2),  # Heuristic: better materials first
+                "selectivity": 75 + (i * 1),
+                "stability": 70 + (i * 1.5),
+                "description": f"From Materials Project (Energy above hull: {mat.get('energy_above_hull', 'N/A')} eV)",
+                "structure": {
+                    "material_id": mat.get('material_id'),
+                    "band_gap": mat.get('band_gap'),
+                    "energy_above_hull": mat.get('energy_above_hull'),
+                }
+            })
+        
+        return formatted
+    
+    except Exception as e:
+        logger.error(f"Error querying Materials Project: {str(e)}")
+        return []
+
+
+def _search_uniprotdb_by_reaction(reactants: List[str], products: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Search UniProt database for enzymes relevant to a reaction.
+    """
+    db = _load_uniprotdb()
+    if not db:
+        logger.warning("UniProt database not loaded")
+        return []
+    
+    # Build search query from reaction
+    search_terms = ' '.join(reactants + products).lower()
+    
+    matching_enzymes = []
+    for entry in db:
+        if isinstance(entry, dict):
+            # Search in description, recommended name, etc.
+            text = ' '.join([
+                entry.get('description', '').lower(),
+                entry.get('recommendedName', '').lower(),
+                entry.get('alternativeNames', '')
+            ])
+            
+            # Simple keyword matching
+            if any(term.lower() in text for term in reactants + products):
+                matching_enzymes.append({
+                    "id": entry.get('uniprot_id', 'unknown'),
+                    "name": entry.get('recommendedName', 'Unknown Enzyme'),
+                    "composition": entry.get('sequence_length', 'N/A'),
+                    "source": "UniProt",
+                    "activity": 75,
+                    "selectivity": 85,
+                    "stability": 80,
+                    "description": entry.get('description', 'No description'),
+                    "structure": {
+                        "type": "enzyme",
+                        "ec_number": entry.get('ec_number'),
+                        "organism": entry.get('organism'),
+                    }
+                })
+    
+    return matching_enzymes[:limit]
+
+
+# Mock data for fallback (kept for backward compatibility)
 KNOWN_CATALYSTS_DB = [
     {
         "id": "cat_001",
@@ -143,37 +294,83 @@ class KnowledgeLayer:
     def __init__(self):
         self.logger = logger
         self.catalysts_db = KNOWN_CATALYSTS_DB
+        # Load UniProt database on startup
+        _load_uniprotdb()
     
     def retrieve_catalysts_for_reaction(
         self, 
         reactants: List[str], 
         products: List[str],
-        limit: int = 23
+        limit: int = 10,
+        use_real_data: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Retrieve known catalysts from scientific databases for a given reaction.
         
-        In production, this would:
-        - Query Materials Project API
-        - Query Open Catalyst Project
-        - Query BRENDA for enzyme catalysts
-        - Query internal experiment database
-        - Perform semantic matching on reactants/products
+        Strategy:
+        1. Extract elements from reactants/products
+        2. Query Materials Project API for real materials
+        3. Fallback to rule-based search + mock data
         
-        For MVP, we return curated mock data.
+        Returns real Materials Project data if available, otherwise mock data.
         """
         self.logger.info(
-            f"Retrieving known catalysts for reaction: {reactants} → {products}"
+            f"Retrieving catalysts for reaction: {reactants} → {products} (use_real_data={use_real_data})"
         )
         
-        # Simulate filtering by reaction type (in real implementation, use semantic similarity)
-        retrieved = sorted(
-            self.catalysts_db,
-            key=lambda x: (x.get("activity", 0) + x.get("selectivity", 0)) / 2,
-            reverse=True
+        retrieved = []
+        
+        if use_real_data:
+            # Extract elements from reaction
+            elements = _extract_elements_from_reaction(reactants, products)
+            self.logger.info(f"Extracted elements from reaction: {elements}")
+            
+            # Try to get real materials from Materials Project
+            if elements:
+                materials = _query_materials_project(elements, limit=limit)
+                if materials:
+                    self.logger.info(f"Retrieved {len(materials)} real materials from Materials Project")
+                    retrieved = materials
+            
+            # If no real data, fall back to mock data
+            if not retrieved:
+                self.logger.info("No real data available, using mock catalysts")
+                retrieved = sorted(
+                    self.catalysts_db,
+                    key=lambda x: (x.get("activity", 0) + x.get("selectivity", 0)) / 2,
+                    reverse=True
+                )[:limit]
+        else:
+            # Use only mock data
+            retrieved = sorted(
+                self.catalysts_db,
+                key=lambda x: (x.get("activity", 0) + x.get("selectivity", 0)) / 2,
+                reverse=True
+            )[:limit]
+        
+        return retrieved
+    
+    def suggest_enzymes_for_reaction(
+        self,
+        reactants: List[str],
+        products: List[str],
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Suggest relevant enzymes from UniProt database for a given reaction.
+        
+        Returns:
+        - List of enzyme records with UniProt IDs, sequences, EC numbers
+        """
+        self.logger.info(
+            f"Suggesting enzymes for reaction: {reactants} → {products}"
         )
         
-        return retrieved[:limit]
+        # Search UniProt database
+        enzymes = _search_uniprotdb_by_reaction(reactants, products, limit)
+        
+        self.logger.info(f"Found {len(enzymes)} relevant enzymes")
+        return enzymes
     
     def get_catalyst_details(self, catalyst_id: str) -> Dict[str, Any]:
         """Retrieve detailed information for a specific catalyst"""

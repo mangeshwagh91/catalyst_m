@@ -2,12 +2,13 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import logger
-from app.db.database import init_db
-from app.api import reactions, catalysts, predictions, visualization, experiments
+from app.db.database import init_db, get_db
+from app.api import reactions, catalysts, predictions, visualization, experiments, datasets, enzymes
 
 
 @asynccontextmanager
@@ -48,6 +49,8 @@ app.include_router(catalysts.router)
 app.include_router(predictions.router)
 app.include_router(visualization.router)
 app.include_router(experiments.router)
+app.include_router(datasets.router)
+app.include_router(enzymes.router)
 
 
 @app.get("/", tags=["root"])
@@ -91,18 +94,40 @@ def health_check():
 
 
 @app.get("/api/dashboard", tags=["dashboard"])
-def get_dashboard_stats():
-    """Get overall platform statistics"""
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    """Get overall platform statistics — live from database"""
+    from app.models.models import Reaction, Catalyst, Prediction, Experiment, ModelVersion
+
+    total_reactions      = db.query(Reaction).count()
+    total_known          = db.query(Catalyst).filter(Catalyst.source == "known").count()
+    total_generated      = db.query(Catalyst).filter(Catalyst.source == "generated").count()
+    total_predictions    = db.query(Prediction).count()
+    total_experiments    = db.query(Experiment).count()
+    retraining_count     = db.query(ModelVersion).count()
+
+    # Anomaly / outperformer counts
+    anomalies            = db.query(Experiment).filter(Experiment.status == "anomaly").count()
+    outperformers        = db.query(Experiment).filter(Experiment.status == "verified_outperformer").count()
+
+    last_exp    = db.query(Experiment).order_by(Experiment.logged_at.desc()).first()
+    last_retrain = db.query(ModelVersion).order_by(ModelVersion.created_at.desc()).first()
+    active_mv   = db.query(ModelVersion).filter(ModelVersion.status == "active").first()
+
     return {
         "platform_stats": {
-            "total_reactions": 5,
-            "total_catalysts_known": 23,
-            "total_catalysts_generated": 40,
-            "total_predictions": 63,
-            "total_experiments": 5,
-            "average_prediction_accuracy": 0.82,
-            "model_version": "v1.0",
-            "feedback_loop_cycles": 1,
+            "total_reactions": total_reactions,
+            "total_catalysts_known": total_known,
+            "total_catalysts_generated": total_generated,
+            "total_predictions": total_predictions,
+            "total_experiments": total_experiments,
+            "average_prediction_accuracy": 0.82,  # Will be computed from deviations in a future update
+            "model_version": active_mv.version if active_mv else "v1.0-gnn",
+            "feedback_loop_cycles": retraining_count,
+        },
+        "experiment_stats": {
+            "anomalies": anomalies,
+            "verified_outperformers": outperformers,
+            "normal": total_experiments - anomalies - outperformers,
         },
         "knowledge_base": {
             "sources": [
@@ -112,12 +137,12 @@ def get_dashboard_stats():
                 "UniProt",
                 "Internal Experiments",
             ],
-            "total_entries": 23,
+            "total_entries": total_known,
         },
         "recent_activity": {
-            "last_experiment_logged": "2026-05-05T00:00:00Z",
-            "last_retraining": None,
-            "next_scheduled_retraining": "2026-05-10T00:00:00Z",
+            "last_experiment_logged": last_exp.logged_at.isoformat() if last_exp else None,
+            "last_retraining": last_retrain.created_at.isoformat() if last_retrain else None,
+            "next_scheduled_retraining": None,
         },
     }
 
