@@ -2,19 +2,27 @@
 
 import uuid
 from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.schemas.schemas import ReactionCreate, ReactionResponse
-from app.models.models import Reaction
+from app.models.models import Reaction, User
 from app.core.logging import logger
+from app.api.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/reactions", tags=["reactions"])
 
 
 @router.post("/", response_model=ReactionResponse)
-def create_reaction(reaction: ReactionCreate, db: Session = Depends(get_db)):
+def create_reaction(
+    reaction: ReactionCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Create a new target reaction query.
+    
+    Requires authentication. The reaction will be owned by the authenticated user.
     
     This triggers the full discovery pipeline:
     1. Knowledge Retrieval - fetch known catalysts
@@ -22,7 +30,7 @@ def create_reaction(reaction: ReactionCreate, db: Session = Depends(get_db)):
     3. Prediction - rank all candidates
     4. Visualization - prepare interactive displays
     """
-    logger.info(f"Creating new reaction: {reaction.name}")
+    logger.info(f"Creating new reaction: {reaction.name} (user: {current_user.email})")
     
     try:
         db_reaction = Reaction(
@@ -30,15 +38,18 @@ def create_reaction(reaction: ReactionCreate, db: Session = Depends(get_db)):
             name=reaction.name,
             reactants=reaction.reactants,
             products=reaction.products,
+            shared_with=reaction.shared_with or [],
             temperature=reaction.temperature,
             pressure=reaction.pressure,
             solvent=reaction.solvent,
-            description=reaction.description
+            description=reaction.description,
+            creator_id=current_user.id  # Enforce ownership
         )
         db.add(db_reaction)
         db.commit()
         db.refresh(db_reaction)
         
+        logger.info(f"Reaction created: {db_reaction.id} by {current_user.email}")
         return db_reaction
     except Exception as e:
         logger.error(f"Error creating reaction: {str(e)}")
@@ -47,23 +58,44 @@ def create_reaction(reaction: ReactionCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{reaction_id}", response_model=ReactionResponse)
-def get_reaction(reaction_id: str, db: Session = Depends(get_db)):
-    """Retrieve details of a specific reaction"""
-    logger.info(f"Retrieving reaction: {reaction_id}")
+def get_reaction(
+    reaction_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Retrieve details of a specific reaction. Users can only see owned or shared reactions."""
+    logger.info(f"Retrieving reaction: {reaction_id} (user: {current_user.email})")
     
-    db_reaction = db.query(Reaction).filter(Reaction.id == reaction_id).first()
+    db_reaction = db.query(Reaction).filter(
+        Reaction.id == reaction_id,
+        or_(
+            Reaction.creator_id == current_user.id,
+            Reaction.shared_with.contains([current_user.id])
+        )
+    ).first()
+    
     if not db_reaction:
-        raise HTTPException(status_code=404, detail="Reaction not found")
+        raise HTTPException(status_code=404, detail="Reaction not found or not authorized")
         
     return db_reaction
 
 
 @router.get("/")
-def list_reactions(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    """List all reactions"""
-    logger.info(f"Listing reactions (skip={skip}, limit={limit})")
+def list_reactions(
+    skip: int = 0,
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List reactions owned by or shared with the current user"""
+    logger.info(f"Listing reactions for user: {current_user.email} (skip={skip}, limit={limit})")
     
-    query = db.query(Reaction)
+    query = db.query(Reaction).filter(
+        or_(
+            Reaction.creator_id == current_user.id,
+            Reaction.shared_with.contains([current_user.id])
+        )
+    )
     total = query.count()
     reactions = query.offset(skip).limit(limit).all()
     

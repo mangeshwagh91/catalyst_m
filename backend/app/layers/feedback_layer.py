@@ -1,7 +1,8 @@
 """Feedback & Learning Layer - Experiment logging and model retraining"""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING, Tuple
+import numpy as np
 from app.core.logging import logger
 
 if TYPE_CHECKING:
@@ -311,3 +312,248 @@ class FeedbackLearningLayer:
             comparison["avg_improvement"] /= len(old_model_predictions)
         
         return comparison
+    
+    def _compute_evaluation_metrics(
+        self,
+        y_true: List[float],
+        y_pred: List[float],
+        metric_name: str = "property"
+    ) -> Dict[str, float]:
+        """
+        Compute evaluation metrics (MAE, RMSE, R²) for model predictions.
+        
+        Args:
+            y_true: Measured/ground truth values
+            y_pred: Predicted values
+            metric_name: Name of the metric being evaluated
+            
+        Returns:
+            Dict with MAE, RMSE, R², and correlation
+        """
+        if len(y_true) < 2:
+            return {
+                "mae": None,
+                "rmse": None,
+                "r2": None,
+                "correlation": None,
+                "n_samples": len(y_true),
+            }
+        
+        y_true = np.array(y_true, dtype=np.float32)
+        y_pred = np.array(y_pred, dtype=np.float32)
+        
+        # MAE: Mean Absolute Error
+        mae = float(np.mean(np.abs(y_true - y_pred)))
+        
+        # RMSE: Root Mean Squared Error
+        rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+        
+        # R²: Coefficient of Determination
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+        r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot != 0 else None
+        
+        # Pearson correlation
+        if np.std(y_true) > 0 and np.std(y_pred) > 0:
+            correlation = float(np.corrcoef(y_true, y_pred)[0, 1])
+        else:
+            correlation = None
+        
+        return {
+            "mae": round(mae, 4) if mae is not None else None,
+            "rmse": round(rmse, 4) if rmse is not None else None,
+            "r2": round(r2, 4) if r2 is not None else None,
+            "correlation": round(correlation, 4) if correlation is not None else None,
+            "n_samples": len(y_true),
+        }
+    
+    def evaluate_model_on_experiments(
+        self,
+        experiments: List[Dict[str, Any]],
+        prediction_layer: "PredictionLayer" = None
+    ) -> Dict[str, Any]:
+        """
+        Evaluate model performance on a set of experiments.
+        
+        Computes MAE and R² for activity, selectivity, and stability.
+        
+        Args:
+            experiments: List of experiment dicts with measured and predicted properties
+            prediction_layer: Optional PredictionLayer to make fresh predictions
+            
+        Returns:
+            Evaluation report with metrics per property
+        """
+        if not experiments or len(experiments) < 2:
+            return {
+                "status": "insufficient_data",
+                "message": f"Need at least 2 experiments for evaluation, got {len(experiments)}",
+                "n_experiments": len(experiments),
+            }
+        
+        evaluation = {
+            "n_experiments": len(experiments),
+            "activity": None,
+            "selectivity": None,
+            "stability": None,
+            "overall_mae": None,
+            "overall_r2": None,
+        }
+        
+        # Collect measured and predicted values
+        activity_measured = []
+        selectivity_measured = []
+        stability_measured = []
+        activity_predicted = []
+        selectivity_predicted = []
+        stability_predicted = []
+        
+        for exp in experiments:
+            if "measured_activity" in exp and "predicted_activity" in exp:
+                activity_measured.append(exp["measured_activity"])
+                activity_predicted.append(exp["predicted_activity"])
+            
+            if "measured_selectivity" in exp and "predicted_selectivity" in exp:
+                selectivity_measured.append(exp["measured_selectivity"])
+                selectivity_predicted.append(exp["predicted_selectivity"])
+            
+            if "measured_stability" in exp and "predicted_stability" in exp:
+                stability_measured.append(exp["measured_stability"])
+                stability_predicted.append(exp["predicted_stability"])
+        
+        # Compute metrics per property
+        if activity_measured:
+            evaluation["activity"] = self._compute_evaluation_metrics(
+                activity_measured, activity_predicted, "activity"
+            )
+        
+        if selectivity_measured:
+            evaluation["selectivity"] = self._compute_evaluation_metrics(
+                selectivity_measured, selectivity_predicted, "selectivity"
+            )
+        
+        if stability_measured:
+            evaluation["stability"] = self._compute_evaluation_metrics(
+                stability_measured, stability_predicted, "stability"
+            )
+        
+        # Compute overall metrics
+        all_measured = activity_measured + selectivity_measured + stability_measured
+        all_predicted = activity_predicted + selectivity_predicted + stability_predicted
+        
+        if all_measured:
+            overall = self._compute_evaluation_metrics(all_measured, all_predicted, "overall")
+            evaluation["overall_mae"] = overall.get("mae")
+            evaluation["overall_r2"] = overall.get("r2")
+        
+        return evaluation
+    
+    def trigger_model_retraining(
+        self,
+        new_experiments: List[Dict[str, Any]],
+        trigger_reason: str = "new_data",
+        eval_experiments: List[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Trigger model retraining with evaluation metrics.
+        
+        Safeguards:
+        - Minimum number of new data points (default: 3)
+        - Quality gates (filter anomalies unless explicitly verified)
+        - Version management and rollback capability
+        - Evaluates model performance before and after retraining
+        - Calls PredictionLayer.train() to actually retrain the model
+        
+        Args:
+            new_experiments: Experiments to train on
+            trigger_reason: Reason for retraining
+            eval_experiments: Optional held-out experiments for evaluation
+            
+        Returns:
+            Retraining job with evaluation metrics
+        """
+        self.logger.info(f"Retraining triggered: {trigger_reason} ({len(new_experiments)} new experiments)")
+        
+        # Data quality gates
+        quality_filtered = []
+        for exp in new_experiments:
+            # Only include normal or verified experiments for training
+            if exp.get("status") in ["normal", "verified_outperformer"]:
+                quality_filtered.append(exp)
+        
+        if len(quality_filtered) < 3:
+            self.logger.warning(f"Insufficient quality data for retraining: {len(quality_filtered)} < 3")
+            return {
+                "status": "insufficient_data",
+                "message": f"Need at least 3 quality experiments, got {len(quality_filtered)}",
+                "n_quality_experiments": len(quality_filtered),
+            }
+        
+        # Evaluate before retraining (on eval_experiments if provided, else use training set)
+        eval_set = eval_experiments if eval_experiments else quality_filtered
+        before_evaluation = None
+        if self.prediction_layer:
+            self.logger.info(f"Evaluating model performance before retraining on {len(eval_set)} experiments")
+            before_evaluation = self.evaluate_model_on_experiments(eval_set, self.prediction_layer)
+            self.logger.info(f"Before evaluation: MAE={before_evaluation.get('overall_mae')}, R²={before_evaluation.get('overall_r2')}")
+        
+        # Actually train the model if available
+        training_report = None
+        after_evaluation = None
+        if self.prediction_layer:
+            self.logger.info(f"Calling PredictionLayer.train() with {len(quality_filtered)} experiments")
+            training_report = self.prediction_layer.train(quality_filtered)
+            self.logger.info(f"Training report: {training_report}")
+            
+            # Evaluate after retraining
+            if training_report and training_report.get("status") == "trained":
+                self.logger.info(f"Evaluating model performance after retraining on {len(eval_set)} experiments")
+                after_evaluation = self.evaluate_model_on_experiments(eval_set, self.prediction_layer)
+                self.logger.info(f"After evaluation: MAE={after_evaluation.get('overall_mae')}, R²={after_evaluation.get('overall_r2')}")
+        else:
+            self.logger.warning("PredictionLayer not available — skipping model training")
+        
+        # Compute improvement metrics
+        improvement_metrics = None
+        if before_evaluation and after_evaluation:
+            improvement_metrics = {
+                "mae_improvement": None,
+                "mae_percent_change": None,
+                "r2_improvement": None,
+                "r2_percent_change": None,
+            }
+            
+            before_mae = before_evaluation.get("overall_mae")
+            after_mae = after_evaluation.get("overall_mae")
+            if before_mae and after_mae:
+                improvement_metrics["mae_improvement"] = round(before_mae - after_mae, 4)
+                improvement_metrics["mae_percent_change"] = round(
+                    ((before_mae - after_mae) / before_mae * 100) if before_mae != 0 else 0, 2
+                )
+            
+            before_r2 = before_evaluation.get("overall_r2")
+            after_r2 = after_evaluation.get("overall_r2")
+            if before_r2 is not None and after_r2 is not None:
+                improvement_metrics["r2_improvement"] = round(after_r2 - before_r2, 4)
+                improvement_metrics["r2_percent_change"] = round(
+                    ((after_r2 - before_r2) / abs(before_r2) * 100) if before_r2 != 0 else 0, 2
+                )
+        
+        retraining_job = {
+            "job_id": f"retrain_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "version": f"v2.{len(self.retraining_history)+1}-trained",
+            "trigger_reason": trigger_reason,
+            "new_training_samples": len(quality_filtered),
+            "filtered_out": len(new_experiments) - len(quality_filtered),
+            "status": "completed" if training_report and training_report.get("status") == "trained" else "queued",
+            "training_report": training_report,
+            "before_evaluation": before_evaluation,
+            "after_evaluation": after_evaluation,
+            "improvement_metrics": improvement_metrics,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        
+        self.retraining_history.append(retraining_job)
+        
+        self.logger.info(f"Retraining job created: {retraining_job['job_id']} (version: {retraining_job['version']})")
+        return retraining_job

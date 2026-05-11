@@ -17,14 +17,45 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    """Stores user accounts for multi-user platform"""
+    __tablename__ = "users"
+
+    id = Column(String(64), primary_key=True)
+    username = Column(String(100), unique=True, nullable=False)
+    email = Column(String(255), unique=True, nullable=False)
+    full_name = Column(String(255), nullable=True)
+    hashed_password = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    is_superuser = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    last_login = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    reactions = relationship("Reaction", back_populates="creator", foreign_keys="Reaction.creator_id")
+    experiments = relationship("Experiment", back_populates="creator", foreign_keys="Experiment.creator_id")
+
+    __table_args__ = (
+        Index("ix_users_username", "username"),
+        Index("ix_users_email", "email"),
+        Index("ix_users_is_active", "is_active"),
+    )
+
+    def __repr__(self):
+        return f"<User(id={self.id!r}, username={self.username!r}, email={self.email!r})>"
+
+
 class Reaction(Base):
     """Stores target reaction queries submitted by researchers."""
     __tablename__ = "reactions"
 
     id = Column(String(64), primary_key=True)
+    creator_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     reactants = Column(JSON, nullable=False)        # List[str]
     products = Column(JSON, nullable=False)          # List[str]
+    shared_with = Column(JSON, nullable=True, default=list)
     temperature = Column(Float, default=298.15)
     pressure = Column(Float, default=1.0)
     solvent = Column(String(100), default="water")
@@ -33,17 +64,19 @@ class Reaction(Base):
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     # Relationships
+    creator = relationship("User", back_populates="reactions", foreign_keys=[creator_id])
     catalysts = relationship("Catalyst", back_populates="reaction", cascade="all, delete-orphan")
     predictions = relationship("Prediction", back_populates="reaction", cascade="all, delete-orphan")
     experiments = relationship("Experiment", back_populates="reaction", cascade="all, delete-orphan")
 
     __table_args__ = (
+        Index("ix_reactions_creator_id", "creator_id"),
         Index("ix_reactions_name", "name"),
         Index("ix_reactions_created_at", "created_at"),
     )
 
     def __repr__(self):
-        return f"<Reaction(id={self.id!r}, name={self.name!r})>"
+        return f"<Reaction(id={self.id!r}, name={self.name!r}, creator_id={self.creator_id!r})>"
 
 
 class Catalyst(Base):
@@ -120,6 +153,7 @@ class Experiment(Base):
     __tablename__ = "experiments"
 
     id = Column(String(64), primary_key=True)
+    creator_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     reaction_id = Column(String(64), ForeignKey("reactions.id", ondelete="CASCADE"), nullable=False)
     catalyst_id = Column(String(64), ForeignKey("catalysts.id", ondelete="CASCADE"), nullable=False)
     # Measured properties
@@ -145,10 +179,14 @@ class Experiment(Base):
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     # Relationships
+    creator = relationship("User", back_populates="experiments", foreign_keys=[creator_id])
     reaction = relationship("Reaction", back_populates="experiments")
     catalyst = relationship("Catalyst", back_populates="experiments")
 
+    shared_with = Column(JSON, nullable=True, default=list)
+
     __table_args__ = (
+        Index("ix_experiments_creator_id", "creator_id"),
         Index("ix_experiments_reaction_id", "reaction_id"),
         Index("ix_experiments_catalyst_id", "catalyst_id"),
         Index("ix_experiments_status", "status"),
@@ -156,7 +194,7 @@ class Experiment(Base):
     )
 
     def __repr__(self):
-        return f"<Experiment(id={self.id!r}, catalyst_id={self.catalyst_id!r}, status={self.status!r})>"
+        return f"<Experiment(id={self.id!r}, creator_id={self.creator_id!r}, catalyst_id={self.catalyst_id!r}, status={self.status!r})>"
 
 
 class ModelVersion(Base):

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import logger
 from app.db.database import init_db, get_db
-from app.api import reactions, catalysts, predictions, visualization, experiments, datasets, enzymes
+from app.api import reactions, catalysts, predictions, visualization, experiments, datasets, enzymes, auth
 
 
 @asynccontextmanager
@@ -44,6 +44,7 @@ app.add_middleware(
 )
 
 # Include API routers
+app.include_router(auth.router)
 app.include_router(reactions.router)
 app.include_router(catalysts.router)
 app.include_router(predictions.router)

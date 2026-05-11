@@ -68,6 +68,8 @@ def test_retrieve_and_generate_catalysts(client_fixture):
     gen_data = gen_resp.json()
     assert gen_data["num_variants"] == 3
     assert isinstance(gen_data["variants"], list)
+    assert "model_version" in gen_data
+    assert "vae" in gen_data["model_version"].lower()
 
 # ------------------- Predictions Tests -------------------
 
