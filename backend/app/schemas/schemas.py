@@ -14,8 +14,10 @@ class ReactionCreate(BaseModel):
     name: str
     reactants: List[str]
     products: List[str]
-    temperature: float = Field(default=298.15, description="Temperature in Kelvin")
-    pressure: float = Field(default=1.0, description="Pressure in atm")
+    temperature: float = Field(default=298.15, description="Temperature value")
+    temperature_unit: str = Field(default="K", description="K or C")
+    pressure: float = Field(default=1.0, description="Pressure value")
+    pressure_unit: str = Field(default="atm", description="atm, bar, MPa")
     solvent: str = Field(default="water")
     description: Optional[str] = None
 
@@ -28,7 +30,9 @@ class ReactionResponse(BaseModel):
     reactants: List[str]
     products: List[str]
     temperature: float
+    temperature_unit: str
     pressure: float
+    pressure_unit: str
     solvent: str
     description: Optional[str]
     created_at: datetime

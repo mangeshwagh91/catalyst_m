@@ -3,7 +3,9 @@ export interface ReactionCreate {
   reactants: string[];
   products: string[];
   temperature?: number;
+  temperature_unit?: string;
   pressure?: number;
+  pressure_unit?: string;
   solvent?: string;
   description?: string;
 }
@@ -14,7 +16,9 @@ export interface ReactionResponse {
   reactants: string[];
   products: string[];
   temperature: number;
+  temperature_unit: string;
   pressure: number;
+  pressure_unit: string;
   solvent: string;
   description?: string | null;
   created_at: string;

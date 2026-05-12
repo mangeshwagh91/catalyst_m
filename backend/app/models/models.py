@@ -26,7 +26,9 @@ class Reaction(Base):
     reactants = Column(JSON, nullable=False)        # List[str]
     products = Column(JSON, nullable=False)          # List[str]
     temperature = Column(Float, default=298.15)
+    temperature_unit = Column(String(20), default="K")
     pressure = Column(Float, default=1.0)
+    pressure_unit = Column(String(20), default="atm")
     solvent = Column(String(100), default="water")
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)

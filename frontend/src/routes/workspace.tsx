@@ -201,7 +201,9 @@ function OverviewView({ stats, projects, isLoading }: { stats: any, projects: an
                     <div className={`h-2 w-2 rounded-full bg-primary`} />
                     <span className="font-medium truncate max-w-[150px]">{p.name}</span>
                   </div>
-                  <span className="font-mono text-[10px] text-muted-foreground">{p.solvent}</span>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {p.temperature}K, {p.pressure}atm
+                  </span>
                 </div>
               ))
             )}
@@ -642,7 +644,11 @@ export function Workspace() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("Overview");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [reactionInput, setReactionInput] = useState("CO2 + 3H2 -> CH3OH + H2O");
+  const [reactionInput, setReactionInput] = useState("");
+  const [temperature, setTemperature] = useState<number | "">("");
+  const [pressure, setPressure] = useState<number | "">("");
+  const [tempUnit, setTempUnit] = useState<"K" | "C">("K");
+  const [pressUnit, setPressUnit] = useState<"atm" | "bar" | "MPa">("atm");
   const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
   const [retrainingToast, setRetrainingToast] = useState<string | null>(null);
   const [chat, setChat] = useState<{ role: "assistant" | "user"; text: string }[]>([
@@ -707,8 +713,8 @@ export function Workspace() {
         name: inputStr,
         reactants,
         products,
-        temperature: 250,
-        pressure: 50,
+        temperature,
+        pressure,
         solvent: "water"
       });
       
@@ -742,6 +748,14 @@ export function Workspace() {
     }
   }, [rankingData]);
 
+  useEffect(() => {
+    if (activeReaction) {
+      setReactionInput(activeReaction.name);
+      if (activeReaction.temperature) setTemperature(activeReaction.temperature);
+      if (activeReaction.pressure) setPressure(activeReaction.pressure);
+    }
+  }, [activeReaction?.id]);
+
   const send = () => {
     if (!input.trim()) return;
     setChat([...chat, { role: "user", text: input }]);
@@ -768,24 +782,93 @@ export function Workspace() {
             <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-primary mb-2">
               <Beaker className="h-3.5 w-3.5" /> Reaction Input
             </div>
-            <div className="rounded-xl border border-border bg-card/60 p-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center shadow-sm">
-              <input
-                value={reactionInput}
-                onChange={(e) => setReactionInput(e.target.value)}
-                className="flex-1 bg-input border border-border rounded-md px-3 py-2.5 font-mono text-sm focus:outline-none focus:border-primary/60 transition-colors"
-              />
-              <div className="flex gap-2">
-                <select className="bg-input border border-border rounded-md px-2 py-2 text-sm focus:border-primary/40 focus:outline-none">
-                  <option>Heterogeneous</option>
-                  <option>Homogeneous</option>
-                  <option>Enzymatic</option>
-                </select>
+            <div className="rounded-xl border border-border bg-card/60 p-6 flex flex-col gap-6 shadow-sm">
+              {/* Row 1: Target Equation & Catalyst Type */}
+              <div className="flex flex-col md:flex-row gap-5 items-stretch md:items-end">
+                <div className="flex-1 flex flex-col gap-2">
+                  <label className="font-mono text-[10px] uppercase tracking-widest text-primary/80 ml-1 flex items-center gap-1.5">
+                    Target Equation
+                  </label>
+                  <input
+                    value={reactionInput}
+                    onChange={(e) => setReactionInput(e.target.value)}
+                    placeholder="CO2 + 3H2 -> CH3OH + H2O"
+                    className="w-full bg-input border border-border rounded-lg px-4 py-3 font-mono text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-all shadow-inner"
+                  />
+                </div>
+                <div className="w-full md:w-72 flex flex-col gap-2">
+                  <label className="font-mono text-[10px] uppercase tracking-widest text-primary/80 ml-1">Catalysis Type</label>
+                  <select className="w-full bg-input border border-border rounded-lg px-3 py-3 text-sm focus:border-primary/40 focus:outline-none h-[46px] cursor-pointer hover:border-border/80 transition-colors">
+                    <option>Heterogeneous</option>
+                    <option>Homogeneous</option>
+                    <option>Enzymatic</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Row 2: Temperature, Pressure & Generate Button */}
+              <div className="flex flex-col md:flex-row gap-5 items-stretch md:items-end">
+                <div className="flex-1 grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-2">
+                    <label className="font-mono text-[10px] uppercase tracking-widest text-primary/80 ml-1 flex items-center justify-between pr-1">
+                      <span>Temperature</span>
+                      <select 
+                        value={tempUnit} 
+                        onChange={(e) => setTempUnit(e.target.value as "K" | "C")}
+                        className="bg-transparent border-none text-primary hover:text-primary/80 focus:outline-none cursor-pointer appearance-none text-right font-mono"
+                      >
+                        <option value="K">(K)</option>
+                        <option value="C">(°C)</option>
+                      </select>
+                    </label>
+                    <input
+                      type="number"
+                      value={tempUnit === "C" ? Math.round((temperature - 273.15) * 100) / 100 : temperature}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setTemperature(tempUnit === "C" ? val + 273.15 : val);
+                      }}
+                      className="w-full bg-input border border-border rounded-lg px-4 py-3 font-mono text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-all shadow-inner"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-mono text-[10px] uppercase tracking-widest text-primary/80 ml-1 flex items-center justify-between pr-1">
+                      <span>Pressure</span>
+                      <select 
+                        value={pressUnit} 
+                        onChange={(e) => setPressUnit(e.target.value as "atm" | "bar" | "MPa")}
+                        className="bg-transparent border-none text-primary hover:text-primary/80 focus:outline-none cursor-pointer appearance-none text-right font-mono"
+                      >
+                        <option value="atm">(ATM)</option>
+                        <option value="bar">(BAR)</option>
+                        <option value="MPa">(MPA)</option>
+                      </select>
+                    </label>
+                    <input
+                      type="number"
+                      value={
+                        pressUnit === "bar" ? Math.round(pressure * 1.01325 * 100) / 100 :
+                        pressUnit === "MPa" ? Math.round(pressure * 0.101325 * 1000) / 1000 :
+                        pressure
+                      }
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setPressure(
+                          pressUnit === "bar" ? val / 1.01325 :
+                          pressUnit === "MPa" ? val / 0.101325 :
+                          val
+                        );
+                      }}
+                      className="w-full bg-input border border-border rounded-lg px-4 py-3 font-mono text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-all shadow-inner"
+                    />
+                  </div>
+                </div>
                 <button 
                   onClick={() => discoveryMutation.mutate(reactionInput)}
                   disabled={discoveryMutation.isPending}
-                  className="px-4 py-2 rounded-md bg-primary text-primary-foreground font-mono text-xs uppercase tracking-widest hover:opacity-90 flex items-center justify-center gap-2 disabled:opacity-50 transition-all"
+                  className="w-full md:w-72 h-[46px] rounded-lg bg-primary text-primary-foreground font-mono text-xs uppercase tracking-widest hover:opacity-90 active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 transition-all shadow-lg shadow-primary/20"
                 >
-                  {discoveryMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />} 
+                  {discoveryMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4 fill-current" />} 
                   Generate
                 </button>
               </div>

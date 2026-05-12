@@ -31,7 +31,9 @@ def create_reaction(reaction: ReactionCreate, db: Session = Depends(get_db)):
             reactants=reaction.reactants,
             products=reaction.products,
             temperature=reaction.temperature,
+            temperature_unit=reaction.temperature_unit,
             pressure=reaction.pressure,
+            pressure_unit=reaction.pressure_unit,
             solvent=reaction.solvent,
             description=reaction.description
         )
@@ -60,10 +62,10 @@ def get_reaction(reaction_id: str, db: Session = Depends(get_db)):
 
 @router.get("/")
 def list_reactions(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    """List all reactions"""
+    """List all reactions, ordered by newest first"""
     logger.info(f"Listing reactions (skip={skip}, limit={limit})")
     
-    query = db.query(Reaction)
+    query = db.query(Reaction).order_by(Reaction.created_at.desc())
     total = query.count()
     reactions = query.offset(skip).limit(limit).all()
     
