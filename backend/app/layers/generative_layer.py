@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import random
 from app.core.logging import logger
 from app.core.utils import generate_id, parse_chemical_formula, compute_similarity
+from app.layers.vae_model import VAEGenerativeModel
 
 
 class GenerativeLayer:
@@ -11,7 +12,8 @@ class GenerativeLayer:
     
     def __init__(self):
         self.logger = logger
-        self.generative_model_version = "v1.0-diffusion-gnn"
+        self.vae_model = VAEGenerativeModel()
+        self.generative_model_version = self.vae_model.version
     
     def generate_variants(
         self,
@@ -21,34 +23,123 @@ class GenerativeLayer:
     ) -> List[Dict[str, Any]]:
         """
         Generate novel catalyst variants based on a base catalyst.
-        
-        In production, this would use:
-        - Graph Neural Networks (GNNs) with graph diffusion models
-        - Trained on OC20/OC22 benchmarks
-        - Constraint satisfaction for valency/steric rules
-        
-        For MVP, we use heuristic-based generation with physics-inspired modifications.
+
+        This implementation attempts to use a trained VAE model first.
+        If the model weights are unavailable or generation fails, it falls
+        back to the existing physics-inspired heuristic generator.
         """
         self.logger.info(
             f"Generating {num_variants} variants of {base_catalyst['name']} "
             f"(optimization: {optimization_target})"
         )
         
-        variants = []
         base_comp = parse_chemical_formula(base_catalyst["composition"])
         base_props = {
             "activity": base_catalyst.get("activity", 50),
             "selectivity": base_catalyst.get("selectivity", 50),
             "stability": base_catalyst.get("stability", 50),
         }
-        
-        for i in range(num_variants):
-            variant = self._create_variant(base_catalyst, base_comp, base_props, i, optimization_target)
-            variants.append(variant)
-        
+
+        variants: List[Dict[str, Any]] = []
+        if self.vae_model.is_available:
+            self.logger.info("Using trained VAE model for generative design")
+            variants.extend(self._generate_from_vae(
+                base_catalyst,
+                base_comp,
+                base_props,
+                num_variants,
+                optimization_target,
+            ))
+
+        if len(variants) < num_variants:
+            remaining = num_variants - len(variants)
+            self.logger.info("Falling back to heuristic generation for remaining variants")
+            variants.extend(self._generate_heuristic_variants(
+                base_catalyst,
+                base_comp,
+                base_props,
+                remaining,
+                optimization_target,
+                start_index=len(variants),
+            ))
+
         self.logger.info(f"Generated {len(variants)} variants successfully")
+        return variants[:num_variants]
+
+    def _generate_from_vae(
+        self,
+        base_cat: Dict[str, Any],
+        base_comp: Dict[str, int],
+        base_props: Dict[str, float],
+        num_variants: int,
+        opt_target: str,
+    ) -> List[Dict[str, Any]]:
+        compositions = self.vae_model.generate_compositions(
+            base_cat["composition"], num_samples=num_variants * 3
+        )
+
+        variants: List[Dict[str, Any]] = []
+        seen = set()
+        for index, comp in enumerate(compositions):
+            if len(variants) >= num_variants:
+                break
+            if comp in seen:
+                continue
+            seen.add(comp)
+
+            similarity = compute_similarity(base_comp, parse_chemical_formula(comp))
+            improvement_factor = max(4.0, 12.0 * (1.0 - similarity))
+
+            predicted_improvements = {
+                "activity": (10 if opt_target == "activity" else 5)
+                    + random.uniform(-2, 2)
+                    + improvement_factor * 0.4,
+                "selectivity": (10 if opt_target == "selectivity" else 5)
+                    + random.uniform(-2, 2)
+                    + improvement_factor * 0.25,
+                "stability": (10 if opt_target == "stability" else 5)
+                    + random.uniform(-2, 2)
+                    + improvement_factor * 0.35,
+            }
+            predicted_improvements["improvement_pct"] = (
+                predicted_improvements["activity"]
+                + predicted_improvements["selectivity"]
+                + predicted_improvements["stability"]
+            ) / 3
+
+            variants.append({
+                "id": generate_id(),
+                "name": f"{base_cat['name']}_AI{index+1}",
+                "composition": comp,
+                "source": "generated",
+                "confidence": 0.75 + random.uniform(0.05, 0.15),
+                "modification_type": "vae_sampling",
+                "modification_description": (
+                    "Generated by a trained variational autoencoder on simulated "
+                    "Materials Project / OC20 composition data."
+                ),
+                "predicted_activity": round(base_props["activity"] + predicted_improvements["activity"], 2),
+                "predicted_selectivity": round(base_props["selectivity"] + predicted_improvements["selectivity"], 2),
+                "predicted_stability": round(base_props["stability"] + predicted_improvements["stability"], 2),
+                "predicted_improvement_pct": round(predicted_improvements["improvement_pct"], 2),
+            })
+
         return variants
-    
+
+    def _generate_heuristic_variants(
+        self,
+        base_cat: Dict[str, Any],
+        base_comp: Dict[str, int],
+        base_props: Dict[str, float],
+        num_variants: int,
+        opt_target: str,
+        start_index: int = 0,
+    ) -> List[Dict[str, Any]]:
+        variants: List[Dict[str, Any]] = []
+        for i in range(start_index, start_index + num_variants):
+            variants.append(self._create_variant(base_cat, base_comp, base_props, i, opt_target))
+        return variants
+
     def _create_variant(
         self,
         base_cat: Dict[str, Any],
@@ -59,12 +150,11 @@ class GenerativeLayer:
     ) -> Dict[str, Any]:
         """Create a single catalyst variant"""
         
-        # Modification strategy
         modification_types = [
-            "doping",           # Add dopant element
-            "substitution",     # Replace element
-            "composition_shift", # Adjust ratios
-            "support_change",   # Modify support material
+            "doping",
+            "substitution",
+            "composition_shift",
+            "support_change",
         ]
         
         mod_type = modification_types[variant_index % len(modification_types)]
@@ -78,44 +168,39 @@ class GenerativeLayer:
         else:
             new_comp, description = self._apply_support_change(base_cat["composition"], variant_index)
         
-        # Predict property improvements based on modification
         predicted_improvements = self._predict_property_changes(
             mod_type, opt_target, base_comp, base_props
         )
         
-        variant = {
+        return {
             "id": generate_id(),
             "name": f"{base_cat['name']}_V{variant_index+1}",
             "composition": new_comp,
             "source": "generated",
-            "confidence": 0.7 + (variant_index % 3) * 0.1,  # 0.7-0.9
+            "confidence": 0.7 + (variant_index % 3) * 0.1,
             "modification_type": mod_type,
             "modification_description": description,
-            "predicted_activity": base_props["activity"] + predicted_improvements.get("activity", 0),
-            "predicted_selectivity": base_props["selectivity"] + predicted_improvements.get("selectivity", 0),
-            "predicted_stability": base_props["stability"] + predicted_improvements.get("stability", 0),
-            "predicted_improvement_pct": predicted_improvements.get("improvement_pct", 0),
+            "predicted_activity": round(base_props["activity"] + predicted_improvements.get("activity", 0), 2),
+            "predicted_selectivity": round(base_props["selectivity"] + predicted_improvements.get("selectivity", 0), 2),
+            "predicted_stability": round(base_props["stability"] + predicted_improvements.get("stability", 0), 2),
+            "predicted_improvement_pct": round(predicted_improvements.get("improvement_pct", 0), 2),
         }
-        
-        return variant
-    
+
     def _apply_doping(self, base_comp_str: str, index: int) -> tuple:
         """Apply doping modification (0.5-5% addition)"""
         dopants = ["B", "N", "P", "S", "Se", "Cl", "K", "Cs"]
         dopant = dopants[index % len(dopants)]
         
-        # Simple string manipulation for mock
         if "+" in base_comp_str:
             new_comp = f"{base_comp_str}{dopant}0.01"
         else:
             new_comp = f"{base_comp_str}+{dopant}0.01"
-            
+        
         description = f"Trace doping with {dopant} to modulate electronic structure and adsorption energies."
         return new_comp, description
-    
+
     def _apply_substitution(self, base_comp_str: str, index: int) -> tuple:
         """Apply isoelectronic or periodic substitution"""
-        # Periodic group substitutions
         subs = {
             "Cu": ["Ag", "Au"],
             "Ni": ["Pd", "Pt"],
@@ -126,7 +211,6 @@ class GenerativeLayer:
             "Co": ["Rh", "Ir"],
         }
         
-        # Find an element in base_comp to substitute
         base_comp = parse_chemical_formula(base_comp_str)
         found_el = None
         for el in base_comp:
@@ -136,36 +220,33 @@ class GenerativeLayer:
         
         if not found_el:
             found_el = list(base_comp.keys())[0]
-            new_el = "Mo" # Fallback
+            new_el = "Mo"
         else:
             new_el = subs[found_el][index % len(subs[found_el])]
-            
+        
         new_comp = base_comp_str.replace(found_el, new_el)
         description = f"Isoelectronic substitution of {found_el} with {new_el} to optimize d-band center and binding strength."
         return new_comp, description
-    
+
     def _apply_composition_shift(self, base_comp_str: str, index: int) -> tuple:
         """Apply composition ratio adjustment (stoichiometry tuning)"""
         base_comp = parse_chemical_formula(base_comp_str)
         if not base_comp:
             return base_comp_str, "Original composition maintained"
-            
+        
         elements = list(base_comp.keys())
         target_el = elements[index % len(elements)]
-        
-        # Simulate ratio shift
         new_comp_parts = []
         for el, val in base_comp.items():
             if el == target_el:
-                new_val = val * (1.1 + (index % 3) * 0.1) # Increase by 10-30%
+                new_val = val * (1.1 + (index % 3) * 0.1)
             else:
                 new_val = val
             new_comp_parts.append(f"{el}{round(new_val, 2)}")
-            
         new_comp = "".join(new_comp_parts)
         description = f"Stoichiometric optimization of {target_el} content to maximize active site density."
         return new_comp, description
-    
+
     def _apply_support_change(self, base_comp_str: str, index: int) -> tuple:
         """Apply support material change with surface area considerations"""
         supports = [
@@ -179,7 +260,7 @@ class GenerativeLayer:
         new_comp = f"{base_comp_str}/{support}"
         description = f"Hybrid structure supported on {support} ({reason})."
         return new_comp, description
-    
+
     def _predict_property_changes(
         self,
         mod_type: str,
@@ -190,12 +271,10 @@ class GenerativeLayer:
         """Predict changes in properties based on modification"""
         
         improvements = {}
-        
-        # Simple heuristic: modifications improve target property
         if mod_type == "doping":
-            improvements["activity"] = 8 + random.uniform(-2, 2)  # ±2 variation
+            improvements["activity"] = 8 + random.uniform(-2, 2)
             improvements["selectivity"] = 5 + random.uniform(-1, 1)
-            improvements["stability"] = -2 + random.uniform(-1, 1)  # May slightly reduce stability
+            improvements["stability"] = -2 + random.uniform(-1, 1)
         elif mod_type == "substitution":
             improvements["activity"] = 12 + random.uniform(-3, 3)
             improvements["selectivity"] = 3 + random.uniform(-1, 1)
@@ -208,8 +287,11 @@ class GenerativeLayer:
             improvements["activity"] = 4 + random.uniform(-1, 1)
             improvements["selectivity"] = 6 + random.uniform(-2, 2)
             improvements["stability"] = 10 + random.uniform(-2, 2)
+        else:
+            improvements["activity"] = 7 + random.uniform(-2, 2)
+            improvements["selectivity"] = 7 + random.uniform(-2, 2)
+            improvements["stability"] = 7 + random.uniform(-2, 2)
         
-        # Optimize for target
         if opt_target == "activity":
             improvements["activity"] *= 1.5
         elif opt_target == "selectivity":
@@ -235,11 +317,8 @@ class GenerativeLayer:
         - SME human-in-loop for novel structures
         """
         issues = []
-        
-        # Simple mock validation
         if len(composition) < 3:
             issues.append("Composition too simple")
-        
         return {
             "is_valid": len(issues) == 0,
             "issues": issues,
@@ -249,10 +328,6 @@ class GenerativeLayer:
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the generative model"""
-        return {
-            "version": self.generative_model_version,
-            "model_type": "Graph Neural Network + Diffusion",
-            "training_data": "OC20/OC22 benchmarks",
-            "supported_elements": ["Cu", "Zn", "Al", "Ni", "Pd", "Pt", "Ag", "Fe", "Co", "Mn", "Cr", "Mo"],
-            "constraints": ["Valency rules", "Steric feasibility", "Phase diagram compatibility"],
-        }
+        model_info = self.vae_model.get_model_info()
+        model_info["generator_fallback"] = "heuristic generation is available if weights are missing"
+        return model_info

@@ -1,16 +1,17 @@
 """API Routes - Catalysts endpoints"""
 
-import uuid
 from typing import List, Optional
+import uuid
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.schemas.schemas import CatalystResponse, CatalystListResponse, GenerativeRequestSchema, GeneratedCatalystSchema
-from app.models.models import Catalyst
+from app.models.models import Catalyst, Reaction, User
 from app.layers.knowledge_layer import KnowledgeLayer
 from app.layers.generative_layer import GenerativeLayer
 from app.core.logging import logger
+from app.api.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/catalysts", tags=["catalysts"])
 
@@ -28,34 +29,74 @@ class RetrieveRequest(BaseModel):
 @router.post("/retrieve")
 def retrieve_known_catalysts(
     request: RetrieveRequest,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Retrieve known catalysts from scientific databases for a target reaction and persist them.
     
+    Requires authentication. Catalysts will be associated with the authenticated user.
+    
     Strategy:
-    1. Extracts elements from reactants/products
-    2. Queries Materials Project API for real materials if available
-    3. Falls back to rule-based mock data if API unavailable
+    1. Extract elements from reactants/products
+    2. Query Materials Project API for real materials
+    3. Query UniProt database for relevant enzymes
+    4. Combine results with source attribution
+    5. Fall back to mock data if APIs unavailable
     
-    Returns catalysts with source attribution (Materials Project, mocked, etc.)
+    Returns catalysts from Materials Project + enzymes from UniProt with clear source breakdown.
     """
-    logger.info(f"Retrieving known catalysts for {request.reactants} → {request.products}")
+    logger.info(f"Retrieving known catalysts and enzymes for {request.reactants} → {request.products} (user: {current_user.email})")
     
+    db_reaction = db.query(Reaction).filter(
+        Reaction.id == request.reaction_id,
+        Reaction.creator_id == current_user.id
+    ).first()
+    if not db_reaction:
+        raise HTTPException(status_code=403, detail="Not authorized to retrieve catalysts for this reaction")
+
     try:
-        # Use knowledge layer to retrieve real or mock catalysts
-        retrieved = knowledge_layer.retrieve_catalysts_for_reaction(
+        # Retrieve inorganic catalysts from Materials Project
+        materials_catalysts = knowledge_layer.retrieve_catalysts_for_reaction(
             reactants=request.reactants,
             products=request.products,
-            limit=request.limit,
-            use_real_data=True  # Enable real API queries
+            limit=request.limit // 2,  # Split limit between materials and enzymes
+            use_real_data=True
         )
         
-        # Determine source
-        source = "Materials Project" if retrieved and any(cat.get("source") == "Materials Project" for cat in retrieved) else "Mock Data"
+        # Retrieve enzymes from UniProt
+        enzymes = knowledge_layer.suggest_enzymes_for_reaction(
+            reactants=request.reactants,
+            products=request.products,
+            limit=request.limit // 2
+        )
         
+        # Convert enzymes to catalyst format for consistency
+        enzyme_catalysts = []
+        for enzyme in enzymes:
+            enzyme_catalysts.append({
+                "id": enzyme.get("id"),
+                "name": enzyme.get("name"),
+                "composition": enzyme.get("composition"),
+                "source": "UniProt",
+                "activity": enzyme.get("activity"),
+                "selectivity": enzyme.get("selectivity"),
+                "stability": enzyme.get("stability"),
+                "description": enzyme.get("description"),
+                "structure": enzyme.get("structure")
+            })
+        
+        # Combine materials and enzymes
+        all_catalysts = materials_catalysts + enzyme_catalysts
+        
+        # Track source breakdown
+        materials_count = len([c for c in all_catalysts if c.get("source") == "Materials Project"])
+        enzymes_count = len([c for c in all_catalysts if c.get("source") == "UniProt"])
+        mock_count = len([c for c in all_catalysts if c.get("source") not in ["Materials Project", "UniProt"]])
+        
+        # Persist to database
         saved_catalysts = []
-        for cat in retrieved:
+        for cat in all_catalysts:
             # Deduplicate: skip if this catalyst name already exists for this reaction
             existing = db.query(Catalyst).filter(
                 Catalyst.reaction_id == request.reaction_id,
@@ -83,11 +124,27 @@ def retrieve_known_catalysts(
         for cat in saved_catalysts:
             db.refresh(cat)
         
+        # Build source breakdown message
+        source_breakdown = []
+        if materials_count > 0:
+            source_breakdown.append(f"{materials_count} from Materials Project")
+        if enzymes_count > 0:
+            source_breakdown.append(f"{enzymes_count} from UniProt")
+        if mock_count > 0:
+            source_breakdown.append(f"{mock_count} from Mock Data")
+        
+        source_message = ", ".join(source_breakdown) if source_breakdown else "No data available"
+        
         return {
             "reaction_id": request.reaction_id,
             "count": len(saved_catalysts),
-            "source": source,
-            "message": f"Retrieved {len(saved_catalysts)} catalysts from {source}",
+            "count_breakdown": {
+                "materials_project": materials_count,
+                "uniprot": enzymes_count,
+                "mock_data": mock_count
+            },
+            "source": source_message,
+            "message": f"Retrieved {len(saved_catalysts)} catalysts: {source_message}",
             "catalysts": [CatalystResponse.model_validate(c) for c in saved_catalysts],
         }
     except Exception as e:
@@ -97,11 +154,25 @@ def retrieve_known_catalysts(
 
 
 @router.post("/generate", response_model=dict)
-def generate_catalyst_variants(request: GenerativeRequestSchema, db: Session = Depends(get_db)):
+def generate_catalyst_variants(
+    request: GenerativeRequestSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Generate novel catalyst variants using AI generative models and persist them.
+    
+    Requires authentication.
     """
-    logger.info(f"Generating {request.num_variants} variants of {request.base_catalyst}")
+    logger.info(f"Generating {request.num_variants} variants of {request.base_catalyst} (user: {current_user.email})")
+    
+    if request.reaction_id:
+        db_reaction = db.query(Reaction).filter(
+            Reaction.id == request.reaction_id,
+            Reaction.creator_id == current_user.id
+        ).first()
+        if not db_reaction:
+            raise HTTPException(status_code=403, detail="Not authorized to generate variants for this reaction")
     
     try:
         # Mock base catalyst for demonstration

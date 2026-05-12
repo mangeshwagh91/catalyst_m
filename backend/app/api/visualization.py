@@ -8,8 +8,13 @@ from app.db.database import get_db
 from app.schemas.schemas import VisualizationDataSchema, DashboardStatsSchema
 from app.layers.visualization_layer import VisualizationLayer
 from app.core.logging import logger
+from app.api.dependencies import get_current_user
 
-router = APIRouter(prefix="/api/visualization", tags=["visualization"])
+router = APIRouter(
+    prefix="/api/visualization",
+    tags=["visualization"],
+    dependencies=[Depends(get_current_user)]
+)
 
 visualization_layer = VisualizationLayer()
 

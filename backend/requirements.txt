@@ -11,6 +11,7 @@ psycopg2-binary==2.9.10
 # pydantic>=2.10 ships pre-built wheels for Python 3.11–3.14 (no Rust compile needed)
 pydantic>=2.10.0
 pydantic-settings>=2.5.0
+pydantic-email-validator>=2.0.0
 python-dotenv==1.0.1
 python-multipart==0.0.9
 

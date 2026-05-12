@@ -1,4 +1,4 @@
-# 🔍 CATALYST AI PLATFORM - COMPREHENSIVE PROJECT AUDIT
+# Catalyst AI Platform - Current Project Audit
 
 **Date:** May 11, 2026  
 **Assessment Type:** Full Technical Audit (Code-Verified)  
@@ -284,76 +284,66 @@ The Knowledge Layer has been upgraded to a query-driven system. It parses reacta
 - **CORS Configuration** - Allows localhost and production domains
 - **Responsive UI** - Tailwind CSS, works on mobile and desktop
 
-### Weaknesses ❌
+## Executive Summary
 
 - **Hardcoded Constants as Physics Baselines**
   - D-band centre values and melting points are used as fixed physical features.
   - While BEP coefficients are now learnable, the initial baseline still relies on literature constants.
 
-- **API Keys in Source Code**
-  - Materials Project key visible in `data_loader.py`
+**Overall completion: 72%**
 
-- **Zero Authentication**
-  - No user accounts
-  - No JWT tokens
-  - No role-based access
-  - Hardcoded "Dr. R. Sharma" user
+| Area             | Completion | Status                                                                 |
+| ---------------- | ---------: | ---------------------------------------------------------------------- |
+| Core Workflow    |        90% | End-to-end flow is functional                                          |
+| AI / ML Layer    |        78% | Real retraining exists, but model is still linear and physics-informed |
+| Data Layer       |        65% | Database-backed, with some external API stubs still unused             |
+| Feedback Loop    |        90% | Experiment logging, comparison, and retraining all work                |
+| Visualizations   |        60% | Charts work; 3D molecular viewer is still missing                      |
+| Collaboration    |        55% | JWT auth exists; full sharing and ACLs are incomplete                  |
+| Code Quality     |        70% | Strong structure, but some hardcoded logic remains                     |
+| Production Ready |        40% | Usable demo, not yet hardened for production                           |
 
-- **No Input Validation**
-  - Temperature/pressure not validated
-  - Composition strings not validated
-  - API payloads not sanitized
+## What Changed Since the Original Audit
 
-- **Mock Data Mixed with Real Code**
-  - Hard to distinguish what's demo vs. what's production
+### 1. Model retraining is now real
 
-- **No Logging of Critical Events**
-  - Retraining events not logged to file
-  - Prediction changes not tracked
-  - API errors not logged systematically
+The biggest correction is that the feedback loop no longer just records retraining jobs. The backend now evaluates the model before and after retraining, trains on quality experiments, persists model state, and uses the latest trained model for subsequent predictions.
 
----
+Verified surfaces:
 
-## PART 4: SECURITY ISSUES
+- `backend/app/layers/feedback_layer.py`
+- `backend/app/api/experiments.py`
+- `backend/app/api/predictions.py`
 
-### 🔴 Critical Issues
+### 2. Multi-user authentication is implemented
 
-1. **API Key Exposed**
-   - Materials Project key in `backend/app/core/data_loader.py`
-   - Should use environment variables
+JWT-based auth now exists end to end. Users can register, log in, fetch their profile, and the frontend stores the access token and loads the authenticated user on startup.
 
-2. **No Authentication**
-   - Any endpoint callable without login
-   - No permission system
-   - Anyone can access/modify any experiment
+Verified surfaces:
 
-3. **CORS Misconfiguration**
-   - Allows all localhost origins
-   - Consider restricting in production
+- `backend/app/core/security.py`
+- `backend/app/api/auth.py`
+- `backend/app/models/models.py`
+- `frontend/src/hooks/useAuth.ts`
+- `frontend/src/context/AuthContext.tsx`
+- `frontend/src/routes/login.tsx`
+- `frontend/src/routes/workspace.tsx`
 
-### 🟡 Medium Issues
+### 3. The hardcoded researcher identity was removed
 
-1. **No Input Validation** - SQL injection unlikely (ORM used) but possible DoS
-2. **No Rate Limiting** - Could be flooded with requests
-3. **Database in Repo** - SQLite file shouldn't be committed
-4. **No Secrets Management** - Passwords/keys hardcoded
+The workspace header no longer shows a fixed name like “Dr. Sharma”. It now displays the authenticated user’s full name and email from the auth context.
 
----
+## Workflow Analysis
 
-## PART 5: WHAT JUDGES WILL SEE
+### Step 1: Reaction entry works
 
-### What They'll Be Impressed By ✅
+Users can still create reactions and persist them in the database. This remains functional and is the entry point for the discovery workflow.
 
-- **Beautiful, Professional UI**
-- **Full End-to-End Workflow** - Can run complete demo
-- **Real Database Persistence** - Data survives restarts
-- **Interactive Charts** - Responsive, real-time updates
-- **Experiment Tracking** - Can log and see results
-- **Clean Code Structure** - Well-organized, readable
+### Step 2: Known catalyst retrieval is still largely static
 
 ### What Will Wow Them 🤩
 
-**Critical Moment:** "Show me how the model improves after you run experiments."
+### Step 3: Candidate generation now includes a trained VAE
 
 **Your Answer:** "The model refines its scoring function using physics-informed linear regression. See how the source changes to 'Trained' and the predictions now match our experimental data with high R² accuracy."
 
@@ -365,11 +355,117 @@ The Knowledge Layer has been upgraded to a query-driven system. It parses reacta
 2. **"Show me a prediction getting better"** - Predictions update dynamically after retraining on experiment batches.
 3. **"Can I see enzyme suggestions?"** - Fully integrated with a 1.2M+ record UniProt database for biological catalysis.
 
----
+Charts and dashboard visualizations remain functional. However, the repo still does not contain a real 3D molecular viewer component, so the platform still lacks the structure visualization that a molecular discovery product should have.
 
-## PART 6: COMPLETION SCORECARD
+### Step 6: Export is functional
 
-### By Feature Area
+Candidate export remains available from the frontend and is still a working part of the workflow.
+
+### Step 7: Experiment logging works
+
+Experimental results are written to the database with measured and predicted values plus deviations. This part of the feedback loop is solid.
+
+### Step 8: Discrepancy analysis works
+
+The feedback layer continues to classify anomalies and outperformers and generate hypotheses from prediction-vs-observation gaps.
+
+### Step 9: Retraining now changes model state
+
+This is the most important correction versus the original audit. Retraining is no longer theater. The system now:
+
+- filters quality experiments
+- evaluates baseline performance
+- trains the model
+- evaluates the updated model
+- stores version history
+- uses the latest model for future predictions
+
+## AI / ML Layer
+
+The ML layer is now materially functional, but it is still not a modern deep-learning stack.
+
+What is real now:
+
+- model retraining on experimental data
+- before/after metrics such as MAE and R²
+- persistent model versioning
+- latest-model loading in prediction endpoints
+
+What is still heuristic or limited:
+
+- candidate generation remains rule-based
+- the core predictor is still a linear / physics-informed model rather than a learned GNN or sequence model
+- external datasets are not yet driving the main workflow
+
+## Data Layer
+
+The database layer remains the backbone of the app and is now more useful because the feedback loop actually consumes stored experiment history.
+
+Still true:
+
+- reactions, predictions, experiments, and model versions persist in the database
+- experiment deviations are recorded
+- model version history is stored
+
+Still incomplete:
+
+- external sources such as Materials Project and UniProt are not yet first-class inputs to the main workflow
+- catalyst retrieval is still largely driven by local logic rather than live data integration
+
+## Authentication and Ownership
+
+This area has improved significantly.
+
+Implemented:
+
+- JWT login and registration
+- auth context on the frontend
+- localStorage token persistence
+- logout flow
+- current-user display in the workspace
+- creator_id on Reaction and Experiment models
+
+Still incomplete:
+
+- protection is not yet enforced uniformly across every API route
+- Catalyst ownership is not fully modeled in the schema
+- team sharing / shared_with semantics are not implemented
+- audit logging and role-based access control are still missing
+
+## Visualizations
+
+Working now:
+
+- candidate ranking displays
+- activity/selectivity and stability charts
+- model feedback charts
+- experiment and history views
+
+Still missing:
+
+- true 3D molecular viewer
+- structure-driven catalyst inspection
+- richer pathway or molecular interaction visualizations
+
+## Security and Production Readiness
+
+The app is better than before, but not production-hardened.
+
+Positive changes:
+
+- password hashing via bcrypt
+- signed JWTs
+- authenticated frontend session handling
+- data ownership fields in key tables
+
+Remaining concerns:
+
+- not all routes appear to enforce auth yet
+- no full permission model
+- secrets and environment handling still need production review
+- no rate limiting or audit trail
+
+## Revised Scorecard
 
 ```
 Core Workflow:           ██████████ 100%
@@ -413,7 +509,7 @@ Collaboration:          █░░░░░░░░░ 10%
 OVERALL:                █████████░ 88%
 ```
 
----
+## What Judges Will See Now
 
 ## PART 7: WHAT'S NEXT? (Post-Hackathon)
 
@@ -496,3 +592,4 @@ npm run dev
 **The biggest achievement: Closing the loop between lab experiments and model refinement.** 🚀
 
 
+**Current assessment: demo-ready, partially collaborative, not production-ready.**

@@ -1,7 +1,7 @@
 """Pydantic schemas for request/response validation"""
 
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from datetime import datetime
 
 # Shared config that silences Pydantic's 'model_' namespace warning
@@ -20,6 +20,7 @@ class ReactionCreate(BaseModel):
     pressure_unit: str = Field(default="atm", description="atm, bar, MPa")
     solvent: str = Field(default="water")
     description: Optional[str] = None
+    shared_with: Optional[List[str]] = None
 
 
 class ReactionResponse(BaseModel):
@@ -29,6 +30,7 @@ class ReactionResponse(BaseModel):
     name: str
     reactants: List[str]
     products: List[str]
+    shared_with: Optional[List[str]] = None
     temperature: float
     temperature_unit: str
     pressure: float
@@ -131,10 +133,12 @@ class ExperimentCreate(BaseModel):
 
 
 class ExperimentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     """Schema for experiment response"""
     id: str
     reaction_id: str
     catalyst_id: str
+    shared_with: Optional[List[str]] = None
     measured_activity: Optional[float]
     measured_selectivity: Optional[float]
     measured_stability: Optional[float]
